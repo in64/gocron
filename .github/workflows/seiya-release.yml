@@ -14,6 +14,7 @@ env:
   PNPM_VERSION: 10.34.3
   GOPROXY: https://goproxy.cn,direct
   GOTOOLCHAIN: local
+  SOURCE_COMMIT: f66716d09cf66510fc3ac58158a62524736afad5
   SERVICE_VERSION: 1.11.1-seiya.2
   FERY_ORIGIN: https://fery.seiya.dev
   FERY_CLI_URL: https://fery.seiya.dev/bin/fery/fery-x86_64-unknown-linux-musl
@@ -25,6 +26,8 @@ jobs:
     steps:
       - name: 检出源码
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
       - name: 安装 pnpm
         uses: pnpm/action-setup@v4
         with:
@@ -61,6 +64,8 @@ jobs:
     steps:
       - name: 检出源码
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
       - name: 安装 Go
         uses: actions/setup-go@v5
         with:
@@ -79,7 +84,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           build_date=2026-08-16T10:31:42Z
-          ldflags="-s -w -buildid= -X main.AppVersion=1.11.1 -X main.BuildDate=${build_date} -X main.GitCommit=${GITHUB_SHA}"
+          ldflags="-s -w -buildid= -X main.AppVersion=1.11.1 -X main.BuildDate=${build_date} -X main.GitCommit=${SOURCE_COMMIT}"
           for service in gocron gocron-node; do
             output="dist/${service}-linux-${{ matrix.arch }}"
             package="./cmd/gocron"
