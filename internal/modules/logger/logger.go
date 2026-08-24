@@ -30,14 +30,17 @@ const (
 	FATAL
 )
 
-func InitLogger() {
+func InitLogger(logDirs ...string) {
 	logDir := "log"
+	if len(logDirs) > 0 && logDirs[0] != "" {
+		logDir = logDirs[0]
+	}
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		panic(err)
 	}
 
 	logFile := filepath.Join(logDir, "cron.log")
-	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		panic(err)
 	}

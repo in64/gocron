@@ -54,6 +54,25 @@ func TestInitEnvCreatesDirectoriesAndSetsVersion(t *testing.T) {
 	}
 }
 
+func TestInitEnvUsesConfiguredAppDir(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "gocron-state")
+	t.Setenv("GOCRON_APP_DIR", root)
+	initTempEnv(t, "1.2.3")
+
+	if AppDir != root {
+		t.Fatalf("expected configured app dir %q, got %q", root, AppDir)
+	}
+	if ConfDir != filepath.Join(root, "conf") || LogDir != filepath.Join(root, "log") {
+		t.Fatalf("unexpected derived directories: conf=%q log=%q", ConfDir, LogDir)
+	}
+	if AppConfig != filepath.Join(root, "conf", "app.ini") {
+		t.Fatalf("unexpected app config path: %q", AppConfig)
+	}
+	if _, err := os.Stat(filepath.Join(root, "log", "cron.log")); err != nil {
+		t.Fatalf("expected application log in configured root: %v", err)
+	}
+}
+
 func TestCreateInstallLockAndIsInstalled(t *testing.T) {
 	initTempEnv(t, "1.0.0")
 	lockPath := filepath.Join(ConfDir, "install.lock")

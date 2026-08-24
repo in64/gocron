@@ -40,7 +40,6 @@ var (
 
 // InitEnv 初始化
 func InitEnv(versionString string) {
-	logger.InitLogger()
 	var err error
 	// 开发环境使用当前目录，生产环境使用可执行文件目录
 	execPath, err := os.Executable()
@@ -64,12 +63,18 @@ func InitEnv(versionString string) {
 	} else {
 		AppDir = filepath.Join(execDir, ".gocron")
 	}
+	// 部署器可以显式指定持久化根目录；未设置时保持原有目录规则。
+	if configuredDir := strings.TrimSpace(os.Getenv("GOCRON_APP_DIR")); configuredDir != "" {
+		AppDir = filepath.Clean(configuredDir)
+	}
 	fmt.Printf("AppDir: %s\n", AppDir)
 	ConfDir = filepath.Join(AppDir, "conf")
 	LogDir = filepath.Join(AppDir, "log")
 	AppConfig = filepath.Join(ConfDir, "app.ini")
 	VersionFile = filepath.Join(ConfDir, ".version")
 	fmt.Printf("ConfDir: %s, LogDir: %s\n", ConfDir, LogDir)
+	// 日志初始化必须使用与配置、数据库相同的持久化根目录。
+	logger.InitLogger(LogDir)
 	createDirIfNotExists(AppDir, ConfDir, LogDir)
 	Installed = IsInstalled()
 	Managed = strings.EqualFold(strings.TrimSpace(os.Getenv("GOCRON_MANAGED")), "true")
