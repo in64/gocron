@@ -1,0 +1,154 @@
+name: 发布 Seiya Linux 制品
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: 1.26.6
+  NODE_VERSION: 25.9.0
+  PNPM_VERSION: 10.34.3
+  GOPROXY: https://goproxy.cn,direct
+  GOTOOLCHAIN: local
+  SERVICE_VERSION: 1.11.1-seiya.2
+  FERY_ORIGIN: https://fery.seiya.dev
+  FERY_CLI_URL: https://fery.seiya.dev/bin/fery/fery-x86_64-unknown-linux-musl
+
+jobs:
+  frontend:
+    name: 构建管理界面
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: web/gocronx-admin/pnpm-lock.yaml
+      - name: 构建管理界面
+        working-directory: web/gocronx-admin
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build
+      - name: 上传管理界面
+        uses: actions/upload-artifact@v4
+        with:
+          name: gocron-frontend-dist
+          path: web/gocronx-admin/dist/
+
+  build:
+    name: 构建 ${{ matrix.arch }}
+    needs: frontend
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            goarch: amd64
+          - arch: arm64
+            goarch: arm64
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: go.sum
+      - name: 下载管理界面
+        uses: actions/download-artifact@v4
+        with:
+          name: gocron-frontend-dist
+          path: web/gocronx-admin/dist/
+      - name: 构建二进制
+        env:
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          build_date=2026-08-16T10:31:42Z
+          ldflags="-s -w -buildid= -X main.AppVersion=1.11.1 -X main.BuildDate=${build_date} -X main.GitCommit=${GITHUB_SHA}"
+          for service in gocron gocron-node; do
+            output="dist/${service}-linux-${{ matrix.arch }}"
+            package="./cmd/gocron"
+            [ "$service" = gocron-node ] && package="./cmd/node"
+            CGO_ENABLED=0 GOOS=linux go build -trimpath -buildvcs=false -ldflags "$ldflags" -o "$output" "$package"
+            chmod 755 "$output"
+            sha256sum "$output" | tee "$output.sha256"
+            file "$output"
+          done
+      - name: 上传二进制
+        uses: actions/upload-artifact@v4
+        with:
+          name: gocron-linux-${{ matrix.arch }}
+          path: dist/gocron-linux-${{ matrix.arch }}*
+      - name: 上传节点二进制
+        uses: actions/upload-artifact@v4
+        with:
+          name: gocron-node-linux-${{ matrix.arch }}
+          path: dist/gocron-node-linux-${{ matrix.arch }}*
+
+  publish:
+    name: 发布并校验 Fery
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 下载二进制
+        uses: actions/download-artifact@v4
+        with:
+          pattern: gocron*-linux-*
+          path: dist
+          merge-multiple: true
+      - name: 安装 Fery CLI
+        env:
+          FERY_SECRET_KEY: ${{ secrets.FERY_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$FERY_SECRET_KEY"
+          curl --fail --location --retry 5 --retry-all-errors --output fery "$FERY_CLI_URL"
+          chmod 755 fery
+      - name: 上传并回读校验
+        env:
+          FERY_SECRET_KEY: ${{ secrets.FERY_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          for service in gocron gocron-node; do
+            for arch in amd64 arm64; do
+              name="${service}-linux-${arch}"
+              path="dist/${name}"
+              remote="r2p:/seiya/services/${service}/${SERVICE_VERSION}/${name}"
+              ./fery put -f "$path" "$remote"
+              expected="$(sha256sum "$path" | awk '{print $1}')"
+              url="${FERY_ORIGIN}/seiya/services/${service}/${SERVICE_VERSION}/${name}?seiya_verify=${expected:0:16}"
+              python3 - "$path" "$url" "$expected" <<'PY'
+          import hashlib
+          import pathlib
+          import sys
+          import urllib.request
+
+          path, url, expected = sys.argv[1:]
+          request = urllib.request.Request(url, headers={"User-Agent": "seiya-release-verifier/1"})
+          with urllib.request.urlopen(request, timeout=60) as response:
+              body = response.read()
+          if len(body) != pathlib.Path(path).stat().st_size:
+              raise SystemExit(f"长度不一致: {url}")
+          actual = hashlib.sha256(body).hexdigest()
+          if actual != expected:
+              raise SystemExit(f"SHA256 不一致: {url}")
+          print(f"已校验 {url} size={len(body)} sha256={actual}")
+          PY
+            done
+          done
