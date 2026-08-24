@@ -160,6 +160,7 @@ func TestApplyEnvOverrides(t *testing.T) {
 	t.Setenv("GOCRON_DB_PORT", "5432")
 	t.Setenv("GOCRON_DB_PASSWORD", "database-secret")
 	t.Setenv("GOCRON_AUTH_SECRET", "shared-auth-secret")
+	t.Setenv("GOCRON_RPC_TOKEN", "shared-rpc-token")
 
 	var config Setting
 	if err := ApplyEnvOverrides(&config); err != nil {
@@ -168,7 +169,7 @@ func TestApplyEnvOverrides(t *testing.T) {
 	if config.Db.Engine != "postgres" || config.Db.Host != "postgresql.default.svc" || config.Db.Port != 5432 {
 		t.Fatalf("unexpected database overrides: %+v", config.Db)
 	}
-	if config.Db.Password != "database-secret" || config.AuthSecret != "shared-auth-secret" {
+	if config.Db.Password != "database-secret" || config.AuthSecret != "shared-auth-secret" || config.RPCToken != "shared-rpc-token" {
 		t.Fatal("managed secrets were not applied")
 	}
 }
@@ -183,8 +184,9 @@ func TestApplyEnvOverridesRejectsInvalidPort(t *testing.T) {
 func TestClearEnvOverrides(t *testing.T) {
 	t.Setenv("GOCRON_DB_PASSWORD", "database-secret")
 	t.Setenv("GOCRON_ADMIN_PASSWORD", "admin-secret")
+	t.Setenv("GOCRON_RPC_TOKEN", "shared-rpc-token")
 	ClearEnvOverrides()
-	if os.Getenv("GOCRON_DB_PASSWORD") != "" || os.Getenv("GOCRON_ADMIN_PASSWORD") != "" {
+	if os.Getenv("GOCRON_DB_PASSWORD") != "" || os.Getenv("GOCRON_ADMIN_PASSWORD") != "" || os.Getenv("GOCRON_RPC_TOKEN") != "" {
 		t.Fatal("managed credentials were not cleared")
 	}
 }

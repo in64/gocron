@@ -40,9 +40,7 @@ func main() {
 	flag.Parse()
 
 	// 令牌优先用命令行,其次读环境变量,避免在进程列表中暴露。
-	if token == "" {
-		token = strings.TrimSpace(os.Getenv("GOCRON_NODE_TOKEN"))
-	}
+	token = readNodeToken(token)
 	level, err := log.ParseLevel(logLevel)
 	if err != nil {
 		log.Fatal(err)
@@ -88,4 +86,14 @@ func main() {
 	}
 
 	server.Start(serverAddr, enableTLS, certificate, token)
+}
+
+func readNodeToken(commandLineToken string) string {
+	if commandLineToken != "" {
+		return commandLineToken
+	}
+	token := strings.TrimSpace(os.Getenv("GOCRON_NODE_TOKEN"))
+	// 启动后不让任务 Shell 继承节点共享令牌。
+	_ = os.Unsetenv("GOCRON_NODE_TOKEN")
+	return token
 }

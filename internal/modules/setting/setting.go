@@ -138,6 +138,7 @@ func ApplyEnvOverrides(s *Setting) error {
 	setString("GOCRON_DB_PREFIX", &s.Db.Prefix)
 	setString("GOCRON_DB_CHARSET", &s.Db.Charset)
 	setString("GOCRON_AUTH_SECRET", &s.AuthSecret)
+	setString("GOCRON_RPC_TOKEN", &s.RPCToken)
 	if err := setInt("GOCRON_DB_PORT", &s.Db.Port); err != nil {
 		return err
 	}
@@ -157,7 +158,7 @@ func ClearEnvOverrides() {
 		"GOCRON_DB_ENGINE", "GOCRON_DB_HOST", "GOCRON_DB_PORT",
 		"GOCRON_DB_USER", "GOCRON_DB_PASSWORD", "GOCRON_DB_DATABASE",
 		"GOCRON_DB_PREFIX", "GOCRON_DB_CHARSET", "GOCRON_DB_MAX_IDLE_CONNS",
-		"GOCRON_DB_MAX_OPEN_CONNS", "GOCRON_AUTH_SECRET",
+		"GOCRON_DB_MAX_OPEN_CONNS", "GOCRON_AUTH_SECRET", "GOCRON_RPC_TOKEN",
 		"GOCRON_ADMIN_USERNAME", "GOCRON_ADMIN_PASSWORD", "GOCRON_ADMIN_EMAIL",
 	} {
 		_ = os.Unsetenv(name)
