@@ -121,6 +121,23 @@ jobs:
           pattern: gocron*-linux-*
           path: dist
           merge-multiple: true
+      - name: 校验标准制品清单
+        run: |
+          set -euo pipefail
+          expected="$(for service in gocron gocron-node; do
+            for arch in amd64 arm64; do
+              printf '%s\n' "${service}-linux-${arch}" "${service}-linux-${arch}.sha256"
+            done
+          done | sort)"
+          actual="$(find dist -maxdepth 1 -type f -exec basename {} \; | sort)"
+          test "$actual" = "$expected"
+          for service in gocron gocron-node; do
+            for arch in amd64 arm64; do
+              name="${service}-linux-${arch}"
+              test "$(awk 'NF {print $1; exit}' "dist/${name}.sha256")" = \
+                "$(sha256sum "dist/${name}" | awk '{print $1}')"
+            done
+          done
       - name: 安装 Fery CLI
         env:
           FERY_SECRET_KEY: ${{ secrets.FERY_SECRET_KEY }}
@@ -139,25 +156,31 @@ jobs:
               name="${service}-linux-${arch}"
               path="dist/${name}"
               remote="r2p:/seiya/services/${service}/${SERVICE_VERSION}/${name}"
+              checksum="${path}.sha256"
+              checksum_remote="${remote}.sha256"
               ./fery put -f "$path" "$remote"
+              ./fery put -f "$checksum" "$checksum_remote"
               expected="$(sha256sum "$path" | awk '{print $1}')"
               url="${FERY_ORIGIN}/seiya/services/${service}/${SERVICE_VERSION}/${name}?seiya_verify=${expected:0:16}"
-              python3 - "$path" "$url" "$expected" <<'PY'
-          import hashlib
-          import pathlib
-          import sys
-          import urllib.request
+              sed 's/^    //' <<'PY' | python3 - "$path" "$url" "$expected"
+                import hashlib
+                import pathlib
+                import sys
+                import urllib.request
 
-          path, url, expected = sys.argv[1:]
-          request = urllib.request.Request(url, headers={"User-Agent": "seiya-release-verifier/1"})
-          with urllib.request.urlopen(request, timeout=60) as response:
-              body = response.read()
-          if len(body) != pathlib.Path(path).stat().st_size:
-              raise SystemExit(f"长度不一致: {url}")
-          actual = hashlib.sha256(body).hexdigest()
-          if actual != expected:
-              raise SystemExit(f"SHA256 不一致: {url}")
-          print(f"已校验 {url} size={len(body)} sha256={actual}")
+                path, url, expected = sys.argv[1:]
+                request = urllib.request.Request(url, headers={"User-Agent": "seiya-release-verifier/1"})
+                with urllib.request.urlopen(request, timeout=60) as response:
+                    body = response.read()
+                if len(body) != pathlib.Path(path).stat().st_size:
+                    raise SystemExit(f"长度不一致: {url}")
+                actual = hashlib.sha256(body).hexdigest()
+                if actual != expected:
+                    raise SystemExit(f"SHA256 不一致: {url}")
+                print(f"已校验 {url} size={len(body)} sha256={actual}")
           PY
+              checksum_url="${FERY_ORIGIN}/seiya/services/${service}/${SERVICE_VERSION}/${name}.sha256?seiya_verify=${expected:0:16}"
+              published_sha="$(curl --fail --location --retry 3 --retry-all-errors "$checksum_url" | awk 'NF {print $1; exit}')"
+              test "$published_sha" = "$expected"
             done
           done
