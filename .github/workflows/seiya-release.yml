@@ -64,8 +64,16 @@ jobs:
         include:
           - arch: amd64
             goarch: amd64
+            gocron_size: 48619646
+            gocron_sha256: 3c9d01cc98ef134c560408dcb040925f32228b9ac02d24a3ac156474e505df6c
+            node_size: 19738750
+            node_sha256: 549119063a3f79d836542e3a055f5c07a78e5fa00ee926c46dd0d6a8f72321fb
           - arch: arm64
             goarch: arm64
+            gocron_size: 45482110
+            gocron_sha256: 144ac9a97c2f5f14ae22a599e895ad0aa8af4f84c760821c033b577ed616c7c9
+            node_size: 18350206
+            node_sha256: 36265fcec0c1c345e147eb3699f025d067f61ec7f42d82d2b32488e0bc444fae
     steps:
       - name: 检出源码
         uses: actions/checkout@v4
@@ -96,8 +104,23 @@ jobs:
             [ "$service" = gocron-node ] && package="./cmd/node"
             CGO_ENABLED=0 GOOS=linux go build -trimpath -buildvcs=false -ldflags "$ldflags" -o "$output" "$package"
             chmod 755 "$output"
-            sha256sum "$output" | tee "$output.sha256"
             file "$output"
+          done
+          for service in gocron gocron-node; do
+            output="dist/${service}-linux-${{ matrix.arch }}"
+            if [ "$service" = gocron ]; then
+              expected_size=${{ matrix.gocron_size }}
+              expected_sha256=${{ matrix.gocron_sha256 }}
+            else
+              expected_size=${{ matrix.node_size }}
+              expected_sha256=${{ matrix.node_sha256 }}
+            fi
+            test "$(stat -c %s "$output")" -eq "$expected_size"
+            test "$(sha256sum "$output" | awk '{print $1}')" = "$expected_sha256"
+          done
+          for service in gocron gocron-node; do
+            output="dist/${service}-linux-${{ matrix.arch }}"
+            sha256sum "$output" | tee "$output.sha256"
           done
       - name: 上传二进制
         uses: actions/upload-artifact@v4
