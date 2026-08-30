@@ -19,6 +19,7 @@ permissions:
   contents: read
 
 env:
+  RELEASE_TAG: v1.11.1-seiya.5
   GO_VERSION: 1.26.6
   NODE_VERSION: 25.9.0
   PNPM_VERSION: 10.34.3
@@ -29,10 +30,14 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
+      - name: 校验精确发布 tag
+        env:
+          SELECTED_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: test "$SELECTED_TAG" = "$RELEASE_TAG"
       - name: 检出精确发布 tag
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref_name }}
+          ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
       - name: 安装 Go
         uses: actions/setup-go@v5
@@ -67,19 +72,28 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
+      - name: 校验精确发布 tag
+        env:
+          SELECTED_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: test "$SELECTED_TAG" = "$RELEASE_TAG"
       - name: 检出精确发布 tag
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref_name }}
+          ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
+      - name: 安装 source 枚举使用的 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.sum
       - name: 下载构建结果
         uses: actions/download-artifact@v4
         with:
           name: seiya-gocron-v1.11.1-seiya.5
           path: dist/
       - name: 安装固定版本 Fery
-        run: .github/scripts/seiya-release.sh install-fery "$RUNNER_TEMP/fery"
+        run: .github/scripts/seiya-release.sh install-fery "$GITHUB_WORKSPACE/.git/fery"
       - name: 上传 sources payload，回读后最后发布 manifest
         env:
           FERY_SECRET_KEY: ${{ secrets.FERY_SECRET_KEY }}
-        run: .github/scripts/seiya-release.sh publish dist "$RUNNER_TEMP/fery"
+        run: .github/scripts/seiya-release.sh publish dist "$GITHUB_WORKSPACE/.git/fery"

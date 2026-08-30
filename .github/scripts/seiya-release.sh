@@ -3,16 +3,20 @@ set -euo pipefail
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd -- "$script_dir/../.." && pwd)
-cdn_origin=${SEIYA_CDN_ORIGIN:-https://fery.seiya.dev}
+cdn_origin=https://fery.seiya.dev
 repository=in64/gocron
 release_tag=v1.11.1-seiya.5
 gocron_version=1.11.1-seiya.5
 gocron_node_version=1.11.1-seiya.4
 app_version=1.11.1
 go_version=1.26.6
+go_proxy=https://goproxy.cn,direct
 node_version=25.9.0
 pnpm_version=10.34.3
+npm_registry=https://registry.npmmirror.com
 fery_version=0.1.1
+fery_linux_amd64_size=8591296
+fery_linux_amd64_sha256=954d5f8ee16c161e83349a0d82f7200e8312cdbc1463782a6b952cab888987fd
 
 usage() {
   echo '用法: seiya-release.sh build <dist-dir>' >&2
@@ -39,10 +43,23 @@ file_size() {
   fi
 }
 
+project_temp_file() {
+  mktemp "$repo_root/.git/seiya-release.XXXXXX"
+}
+
+project_temp_dir() {
+  mktemp -d "$repo_root/.git/seiya-release.XXXXXX"
+}
+
+source_files_json() {
+  python3 "$script_dir/seiya-source-files.py" \
+    --repo "$repo_root" --commit "$release_commit"
+}
+
 load_release_identity() {
   local dirty
-  release_commit=$(git -C "$repo_root" rev-parse HEAD)
-  test "$(git -C "$repo_root" rev-parse "$release_tag^{commit}")" = "$release_commit" || {
+  release_commit=$(git -C "$repo_root" rev-parse HEAD) || return
+  test "$(git -C "$repo_root" rev-parse "refs/tags/$release_tag^{commit}")" = "$release_commit" || {
     echo "发布 tag $release_tag 必须精确指向当前提交" >&2
     return 1
   }
@@ -52,19 +69,23 @@ load_release_identity() {
     return 1
   }
   source_app_version=$(sed -n 's/.*AppVersion[[:space:]]*= "\([^"]*\)".*/\1/p' \
-    "$repo_root/cmd/gocron/gocron.go")
+    "$repo_root/cmd/gocron/gocron.go") || return
   test "$source_app_version" = "$app_version" || {
     echo "源码 AppVersion 与发布基线不一致: $source_app_version" >&2
     return 1
   }
+  source_files_json >/dev/null
 }
 
 require_toolchains() {
-  command -v go >/dev/null
-  command -v node >/dev/null
-  command -v pnpm >/dev/null
-  test "$(go env GOVERSION)" = "go$go_version" || {
-    echo "需要 Go $go_version，当前为 $(go env GOVERSION)" >&2
+  local current_go
+  command -v go >/dev/null || return
+  command -v node >/dev/null || return
+  command -v pnpm >/dev/null || return
+  command -v tar >/dev/null || return
+  current_go=$(GOTOOLCHAIN=local go env GOVERSION) || return
+  test "$current_go" = "go$go_version" || {
+    echo "需要 Go $go_version，当前为 $current_go" >&2
     return 1
   }
   test "$(node --version)" = "v$node_version" || {
@@ -78,20 +99,39 @@ require_toolchains() {
 }
 
 manifest_json() {
-  local name version service_dir
+  local name version service_dir source_epoch build_date source_file
   name=$1
   version=$2
   service_dir=$3
+  source_epoch=$(git -C "$repo_root" show -s --format=%ct "$release_commit") || return
+  build_date=$(python3 - "$source_epoch" <<'PY'
+import datetime
+import sys
+
+print(datetime.datetime.fromtimestamp(int(sys.argv[1]), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+PY
+  ) || return
+  source_file=$(project_temp_file) || return
+  if ! source_files_json > "$source_file"; then
+    rm -f -- "$source_file"
+    return 1
+  fi
+  if ! \
   SEIYA_MANIFEST_REPO_ROOT=$repo_root \
   SEIYA_MANIFEST_SERVICE_DIR=$service_dir \
+  SEIYA_MANIFEST_SOURCE_FILE=$source_file \
   SEIYA_MANIFEST_NAME=$name \
   SEIYA_MANIFEST_VERSION=$version \
   SEIYA_MANIFEST_REPOSITORY=$repository \
   SEIYA_MANIFEST_COMMIT=$release_commit \
   SEIYA_MANIFEST_TAG=$release_tag \
   SEIYA_MANIFEST_GO=$go_version \
+  SEIYA_MANIFEST_GO_PROXY=$go_proxy \
   SEIYA_MANIFEST_NODE=$node_version \
   SEIYA_MANIFEST_PNPM=$pnpm_version \
+  SEIYA_MANIFEST_NPM_REGISTRY=$npm_registry \
+  SEIYA_MANIFEST_SOURCE_EPOCH=$source_epoch \
+  SEIYA_MANIFEST_BUILD_DATE=$build_date \
     python3 - <<'PY'
 import hashlib
 import json
@@ -113,10 +153,7 @@ def file_record(path: pathlib.Path, filename: str | None = None) -> dict:
     }
 
 
-source_files = {}
-for relative in ("go.sum", "web/gocronx-admin/pnpm-lock.yaml"):
-    record = file_record(repo / relative)
-    source_files[relative] = {"size": record["size"], "sha256": record["sha256"]}
+source_files = json.loads(pathlib.Path(os.environ["SEIYA_MANIFEST_SOURCE_FILE"]).read_text(encoding="utf-8"))
 
 targets = {}
 for target in ("linux-amd64", "linux-arm64"):
@@ -138,21 +175,70 @@ document = {
             "node": os.environ["SEIYA_MANIFEST_NODE"],
             "pnpm": os.environ["SEIYA_MANIFEST_PNPM"],
         },
+        "source_date_epoch": int(os.environ["SEIYA_MANIFEST_SOURCE_EPOCH"]),
         "source_files": source_files,
+        "build": {
+            "source": {
+                "kind": "git-archive",
+                "commit": os.environ["SEIYA_MANIFEST_COMMIT"],
+            },
+            "frontend": {
+                "working_directory": "web/gocronx-admin",
+                "install": [
+                    "pnpm", "install", "--frozen-lockfile", "--registry",
+                    os.environ["SEIYA_MANIFEST_NPM_REGISTRY"],
+                ],
+                "command": ["pnpm", "run", "build"],
+                "environment": {
+                    "CI": "true",
+                    "TMPDIR": "<dist-dir>/.build-tmp.XXXXXX/tmp",
+                },
+            },
+            "go": {
+                "command": ["go", "build"],
+                "flags": ["-mod=readonly", "-trimpath", "-buildvcs=false"],
+                "environment": {
+                    "CGO_ENABLED": "0",
+                    "GOFLAGS": "",
+                    "GOOS": "linux",
+                    "GOPROXY": os.environ["SEIYA_MANIFEST_GO_PROXY"],
+                    "GOTOOLCHAIN": "local",
+                    "GOWORK": "off",
+                    "SOURCE_DATE_EPOCH": os.environ["SEIYA_MANIFEST_SOURCE_EPOCH"],
+                    "TMPDIR": "<dist-dir>/.build-tmp.XXXXXX/tmp",
+                },
+                "ldflags": [
+                    "-s",
+                    "-w",
+                    "-buildid=",
+                    f"-X main.AppVersion={os.environ['SEIYA_MANIFEST_VERSION'].split('-seiya.', 1)[0]}",
+                    f"-X main.BuildDate={os.environ['SEIYA_MANIFEST_BUILD_DATE']}",
+                    f"-X main.GitCommit={os.environ['SEIYA_MANIFEST_COMMIT']}",
+                ],
+                "packages": {"gocron": "./cmd/gocron", "gocron-node": "./cmd/node"},
+                "targets": {"linux-amd64": "amd64", "linux-arm64": "arm64"},
+            },
+        },
         "files": [file_record(dist / "LICENSE", "LICENSE")],
     },
     "targets": targets,
 }
 print(json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
 PY
+  then
+    rm -f -- "$source_file"
+    return 1
+  fi
+  rm -f -- "$source_file"
 }
 
 write_manifests() {
   local dist_dir
   dist_dir=$1
-  manifest_json gocron "$gocron_version" "$dist_dir/gocron" > "$dist_dir/gocron/release.json"
+  manifest_json gocron "$gocron_version" "$dist_dir/gocron" \
+    > "$dist_dir/gocron/release.json" || return
   manifest_json gocron-node "$gocron_node_version" "$dist_dir/gocron-node" \
-    > "$dist_dir/gocron-node/release.json"
+    > "$dist_dir/gocron-node/release.json" || return
 }
 
 validate_manifest() {
@@ -160,8 +246,11 @@ validate_manifest() {
   name=$1
   version=$2
   service_dir=$3
-  expected=$(mktemp)
-  manifest_json "$name" "$version" "$service_dir" > "$expected"
+  expected=$(project_temp_file) || return
+  if ! manifest_json "$name" "$version" "$service_dir" > "$expected"; then
+    rm -f -- "$expected"
+    return 1
+  fi
   cmp -s "$expected" "$service_dir/release.json" || {
     rm -f -- "$expected"
     echo "release.json 与源码或本地产物不一致: $name" >&2
@@ -173,67 +262,96 @@ validate_manifest() {
 verify_local() {
   local dist_dir
   dist_dir=$1
-  load_release_identity
-  validate_manifest gocron "$gocron_version" "$dist_dir/gocron"
-  validate_manifest gocron-node "$gocron_node_version" "$dist_dir/gocron-node"
+  load_release_identity || return
+  validate_manifest gocron "$gocron_version" "$dist_dir/gocron" || return
+  validate_manifest gocron-node "$gocron_node_version" "$dist_dir/gocron-node" || return
 }
 
 build_release() {
-  local dist_dir build_epoch build_date ldflags arch service package output
+  local dist_dir build_tmp build_source build_work_tmp build_epoch build_date
+  local ldflags arch service package output
   dist_dir=$1
-  load_release_identity
-  require_toolchains
-  mkdir -p "$dist_dir/gocron" "$dist_dir/gocron-node"
-  dist_dir=$(cd -- "$dist_dir" && pwd)
+  load_release_identity || return
+  require_toolchains || return
+  mkdir -p "$dist_dir/gocron" "$dist_dir/gocron-node" || return
+  dist_dir=$(cd -- "$dist_dir" && pwd) || return
   rm -f -- \
     "$dist_dir/gocron/gocron-linux-amd64" \
     "$dist_dir/gocron/gocron-linux-arm64" \
     "$dist_dir/gocron/release.json" \
     "$dist_dir/gocron-node/gocron-node-linux-amd64" \
     "$dist_dir/gocron-node/gocron-node-linux-arm64" \
-    "$dist_dir/gocron-node/release.json"
-
-  (
-    cd "$repo_root/web/gocronx-admin"
-    pnpm install --frozen-lockfile
-    pnpm run build
-  )
-
-  build_epoch=$(git -C "$repo_root" show -s --format=%ct HEAD)
+    "$dist_dir/gocron-node/release.json" || return
+  build_epoch=$(git -C "$repo_root" show -s --format=%ct HEAD) || return
   build_date=$(python3 - "$build_epoch" <<'PY'
 import datetime
 import sys
 
 print(datetime.datetime.fromtimestamp(int(sys.argv[1]), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
 PY
-  )
+  ) || return
   ldflags="-s -w -buildid= -X main.AppVersion=$app_version -X main.BuildDate=$build_date -X main.GitCommit=$release_commit"
+  build_tmp=$(mktemp -d "$dist_dir/.build-tmp.XXXXXX") || return
+  build_source=$build_tmp/source
+  build_work_tmp=$build_tmp/tmp
+  if ! mkdir -p "$build_source" "$build_work_tmp"; then
+    rm -rf -- "$build_tmp"
+    return 1
+  fi
+  if ! git -C "$repo_root" archive --format=tar "$release_commit" \
+    | tar -xf - -C "$build_source"; then
+    rm -rf -- "$build_tmp"
+    return 1
+  fi
+
+  if ! (
+    cd "$build_source/web/gocronx-admin" \
+      && export CI=true TMPDIR=$build_work_tmp \
+      && pnpm install --frozen-lockfile --registry "$npm_registry" \
+      && pnpm run build
+  ); then
+    rm -rf -- "$build_tmp"
+    return 1
+  fi
+
   for arch in amd64 arm64; do
     for service in gocron gocron-node; do
       package=./cmd/gocron
       test "$service" = gocron || package=./cmd/node
       output="$dist_dir/$service/$service-linux-$arch"
-      (
-        cd "$repo_root"
-        CGO_ENABLED=0 GOOS=linux GOARCH=$arch SOURCE_DATE_EPOCH=$build_epoch \
-          go build -mod=readonly -trimpath -buildvcs=false -ldflags "$ldflags" \
-            -o "$output" "$package"
-      )
-      chmod 0755 "$output"
+      if ! (
+        cd "$build_source" \
+          && CGO_ENABLED=0 GOFLAGS='' GOOS=linux GOARCH=$arch GOPROXY=$go_proxy \
+            GOTOOLCHAIN=local GOWORK=off \
+            SOURCE_DATE_EPOCH=$build_epoch TMPDIR=$build_work_tmp \
+            go build -mod=readonly -trimpath -buildvcs=false -ldflags "$ldflags" \
+              -o "$output" "$package"
+      ); then
+        rm -rf -- "$build_tmp"
+        return 1
+      fi
+      if ! chmod 0755 "$output"; then
+        rm -rf -- "$build_tmp"
+        return 1
+      fi
     done
   done
-  install -m 0644 "$repo_root/LICENSE" "$dist_dir/gocron/LICENSE"
-  install -m 0644 "$repo_root/LICENSE" "$dist_dir/gocron-node/LICENSE"
-  write_manifests "$dist_dir"
-  verify_local "$dist_dir"
+  if ! install -m 0644 "$build_source/LICENSE" "$dist_dir/gocron/LICENSE" \
+    || ! install -m 0644 "$build_source/LICENSE" "$dist_dir/gocron-node/LICENSE" \
+    || ! write_manifests "$dist_dir" \
+    || ! verify_local "$dist_dir"; then
+    rm -rf -- "$build_tmp"
+    return 1
+  fi
+  rm -rf -- "$build_tmp"
 }
 
 verify_cdn() {
   local file relative expected temporary attempt
   file=$1
   relative=$2
-  expected=$(sha256_file "$file")
-  temporary=$(mktemp)
+  expected=$(sha256_file "$file") || return
+  temporary=$(project_temp_file) || return
   attempt=1
   while :; do
     if curl -fsSL \
@@ -254,104 +372,236 @@ verify_cdn() {
   echo "CDN 逐字节回读通过: $relative"
 }
 
-publish_immutable() {
-  local file relative fery expected temporary status
+publish_immutable() (
+  local file relative fery expected cdn_file fery_file status put_failed
   file=$1
   relative=$2
   fery=$3
-  expected=$(sha256_file "$file")
-  temporary=$(mktemp)
-  if ! status=$(curl -sS -L -o "$temporary" -w '%{http_code}' \
+  expected=$(sha256_file "$file") || return
+  cdn_file=$(project_temp_file) || return
+  fery_file=$(project_temp_file) || {
+    rm -f -- "$cdn_file"
+    return 1
+  }
+  trap 'rm -f -- "$cdn_file" "$fery_file"' EXIT
+  if ! status=$(curl -sS -L -o "$cdn_file" -w '%{http_code}' \
     "$cdn_origin/$relative?seiya_preflight=${expected:0:16}"); then
-    rm -f -- "$temporary"
     echo "远端预检请求失败: $relative" >&2
     return 1
   fi
   case "$status" in
     200)
-      if ! cmp -s "$file" "$temporary"; then
-        rm -f -- "$temporary"
+      if ! cmp -s "$file" "$cdn_file"; then
         echo "远端不可变对象与本地产物冲突: $relative" >&2
         return 1
       fi
       echo "远端不可变对象已存在且一致: $relative"
       ;;
     404)
-      "$fery" put "$file" "r2p:/$relative"
+      put_failed=false
+      if ! "$fery" put "$file" "r2p:/$relative"; then
+        put_failed=true
+      fi
       ;;
     *)
-      rm -f -- "$temporary"
       echo "远端预检失败: $relative HTTP $status" >&2
       return 1
       ;;
   esac
-  rm -f -- "$temporary"
-  verify_cdn "$file" "$relative"
+  if ! wait_for_dual_readback "$file" "$relative" "$fery" "$fery_file" "$cdn_file"; then
+    if [ "${put_failed:-false}" = true ]; then
+      echo "Fery put 非零且对象未按同字节收敛: $relative" >&2
+    fi
+    return 1
+  fi
+  echo "Fery get 与 CDN 双通道回读通过: $relative"
+)
+
+wait_for_dual_readback() {
+  local file relative fery fery_file cdn_file attempt status fery_same cdn_same expected
+  file=$1
+  relative=$2
+  fery=$3
+  fery_file=$4
+  cdn_file=$5
+  expected=$(sha256_file "$file") || return
+  attempt=1
+  while [ "$attempt" -le 10 ]; do
+    fery_same=false
+    cdn_same=false
+    if "$fery" get -f "r2p:/$relative" "$fery_file" >/dev/null 2>&1; then
+      if ! cmp -s "$file" "$fery_file"; then
+        echo "Fery get 回读字节冲突: $relative" >&2
+        return 1
+      fi
+      fery_same=true
+    fi
+    if ! status=$(curl -sS -L -o "$cdn_file" -w '%{http_code}' \
+      "$cdn_origin/$relative?seiya_dual_readback=${expected:0:16}-$attempt"); then
+      status=000
+    fi
+    if [ "$status" = 200 ]; then
+      if ! cmp -s "$file" "$cdn_file"; then
+        echo "CDN 回读字节冲突: $relative" >&2
+        return 1
+      fi
+      cdn_same=true
+    fi
+    if [ "$fery_same" = true ] && [ "$cdn_same" = true ]; then
+      return 0
+    fi
+    if [ "$attempt" -lt 10 ]; then
+      sleep 2
+    fi
+    attempt=$((attempt + 1))
+  done
+  echo "对象未在 10 轮内完成 Fery get 与 CDN 双通道收敛: $relative" >&2
+  return 1
 }
 
-install_fery() {
-  local destination manifest filename size sha temporary
-  destination=$1
-  manifest=$(mktemp)
-  temporary=$(mktemp)
-  curl -fsSL "$cdn_origin/seiya/tools/fery/$fery_version/release.json" -o "$manifest"
-  read -r filename size sha < <(python3 - "$manifest" "$fery_version" <<'PY'
+read_fery_record() {
+  python3 - "$1" "$fery_version" "$fery_linux_amd64_size" "$fery_linux_amd64_sha256" <<'PY'
 import json
 import pathlib
+import re
 import sys
 
 document = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-if document.get("name") != "fery" or document.get("version") != sys.argv[2]:
+if (
+    document.get("schema_version") != 1
+    or document.get("name") != "fery"
+    or document.get("version") != sys.argv[2]
+):
     raise SystemExit("Fery release manifest 名称或版本不匹配")
+if not sys.argv[3].isdigit() or int(sys.argv[3]) <= 0:
+    raise SystemExit("Fery linux-amd64 固定 size 尚未填充")
+if not re.fullmatch(r"[0-9a-f]{64}", sys.argv[4]):
+    raise SystemExit("Fery linux-amd64 固定 SHA256 尚未填充")
 target = document.get("targets", {}).get("linux-amd64", {})
 expected = {"filename", "size", "sha256"}
 if set(target) != expected or target.get("filename") != "fery-linux-amd64":
     raise SystemExit("Fery release manifest 缺少 linux-amd64")
+if type(target.get("size")) is not int or target["size"] <= 0:
+    raise SystemExit("Fery linux-amd64 size 无效")
+if not re.fullmatch(r"[0-9a-f]{64}", target.get("sha256", "")):
+    raise SystemExit("Fery linux-amd64 SHA256 无效")
+if target["size"] != int(sys.argv[3]) or target["sha256"] != sys.argv[4]:
+    raise SystemExit("Fery release manifest 与 producer 固定 size/SHA256 不一致")
 print(target["filename"], target["size"], target["sha256"])
 PY
-  )
-  curl -fsSL "$cdn_origin/seiya/tools/fery/$fery_version/$filename" -o "$temporary"
-  test "$(file_size "$temporary")" = "$size"
-  test "$(sha256_file "$temporary")" = "$sha"
-  chmod 0755 "$temporary"
-  mv -- "$temporary" "$destination"
-  rm -f -- "$manifest"
 }
 
-publish_release() {
-  local dist_dir fery service name prefix
+verify_fery_binary() {
+  local binary manifest filename size sha
+  binary=$1
+  test -x "$binary" || {
+    echo "Fery CLI 不可执行: $binary" >&2
+    return 1
+  }
+  manifest=$(project_temp_file) || return
+  if ! curl -fsSL "$cdn_origin/seiya/tools/fery/$fery_version/release.json" -o "$manifest"; then
+    rm -f -- "$manifest"
+    return 1
+  fi
+  if ! read -r filename size sha < <(read_fery_record "$manifest"); then
+    rm -f -- "$manifest"
+    return 1
+  fi
+  rm -f -- "$manifest"
+  test "$(file_size "$binary")" = "$size" \
+    && test "$(sha256_file "$binary")" = "$sha" || {
+      echo "Fery CLI 与固定 release 不一致: $binary" >&2
+      return 1
+    }
+  test "$("$binary" --version)" = "fery $fery_version" || {
+    echo "Fery CLI 自报版本不匹配: $binary" >&2
+    return 1
+  }
+}
+
+install_fery() {
+  local destination temporary filename size sha
+  destination=$1
+  temporary=$(project_temp_dir) || return
+  if ! curl -fsSL "$cdn_origin/seiya/tools/fery/$fery_version/release.json" \
+    -o "$temporary/release.json"; then
+    rm -rf -- "$temporary"
+    return 1
+  fi
+  if ! read -r filename size sha < <(read_fery_record "$temporary/release.json"); then
+    rm -rf -- "$temporary"
+    return 1
+  fi
+  if ! curl -fsSL "$cdn_origin/seiya/tools/fery/$fery_version/$filename" \
+    -o "$temporary/fery"; then
+    rm -rf -- "$temporary"
+    return 1
+  fi
+  test "$(file_size "$temporary/fery")" = "$size" \
+    && test "$(sha256_file "$temporary/fery")" = "$sha" || {
+      rm -rf -- "$temporary"
+      echo 'Fery 下载字节与固定 release 不一致' >&2
+      return 1
+    }
+  if ! chmod 0755 "$temporary/fery"; then
+    rm -rf -- "$temporary"
+    return 1
+  fi
+  test "$("$temporary/fery" --version)" = "fery $fery_version" || {
+    rm -rf -- "$temporary"
+    echo 'Fery 下载文件自报版本不匹配' >&2
+    return 1
+  }
+  if ! mkdir -p "$(dirname -- "$destination")" \
+    || ! mv -- "$temporary/fery" "$destination"; then
+    rm -rf -- "$temporary"
+    return 1
+  fi
+  rm -rf -- "$temporary"
+}
+
+publish_release() (
+  local dist_dir fery snapshot_root snapshot_dir service name prefix
   dist_dir=$1
   fery=$2
   test -n "${FERY_SECRET_KEY:-}" || {
     echo 'FERY_SECRET_KEY 未设置' >&2
     return 1
   }
-  test -x "$fery"
-  verify_local "$dist_dir"
+  # 先执行外部 CLI 的版本检查，再验原 dist，阻断 --version 篡改后进入快照。
+  verify_fery_binary "$fery" || return
+  verify_local "$dist_dir" || return
+  snapshot_root=$(project_temp_dir) || return
+  trap 'rm -rf -- "$snapshot_root"' EXIT
+  snapshot_dir=$snapshot_root/release
+  mkdir -m 0700 "$snapshot_dir" || return
+  cp -R "$dist_dir/." "$snapshot_dir/" || return
+  # 从这里起只读取重验后的完整私有快照。
+  verify_local "$snapshot_dir" || return
 
   # 两项服务的全部 payload 先发布并完成 CDN 回读，release.json 最后发布。
   for service in gocron gocron-node; do
     prefix="seiya/sources/$service/$release_commit"
     for name in "$service-linux-amd64" "$service-linux-arm64" LICENSE; do
-      publish_immutable "$dist_dir/$service/$name" \
-        "$prefix/$name" "$fery"
+      publish_immutable "$snapshot_dir/$service/$name" \
+        "$prefix/$name" "$fery" || return
     done
   done
   for service in gocron gocron-node; do
     prefix="seiya/sources/$service/$release_commit"
-    publish_immutable "$dist_dir/$service/release.json" \
-      "$prefix/release.json" "$fery"
+    publish_immutable "$snapshot_dir/$service/release.json" \
+      "$prefix/release.json" "$fery" || return
   done
-}
+)
 
 verify_remote() {
   local dist_dir service name prefix
   dist_dir=$1
-  verify_local "$dist_dir"
+  verify_local "$dist_dir" || return
   for service in gocron gocron-node; do
     prefix="seiya/sources/$service/$release_commit"
     for name in "$service-linux-amd64" "$service-linux-arm64" LICENSE release.json; do
-      verify_cdn "$dist_dir/$service/$name" "$prefix/$name"
+      verify_cdn "$dist_dir/$service/$name" "$prefix/$name" || return
     done
   done
 }
