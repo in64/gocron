@@ -1,9 +1,15 @@
-name: 发布 Seiya Linux 制品
+name: 发布 Seiya 标准构建输入
 
 on:
   push:
-    branches: [master]
+    tags:
+      - v1.11.1-seiya.5
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 必须已存在且精确指向发布提交的 tag
+        required: true
+        default: v1.11.1-seiya.5
 
 concurrency:
   group: seiya-release-${{ github.repository }}-${{ github.ref }}
@@ -16,23 +22,23 @@ env:
   GO_VERSION: 1.26.6
   NODE_VERSION: 25.9.0
   PNPM_VERSION: 10.34.3
-  GOPROXY: https://goproxy.cn,direct
-  GOTOOLCHAIN: local
-  SOURCE_COMMIT: f66716d09cf66510fc3ac58158a62524736afad5
-  SERVICE_VERSION: 1.11.1-seiya.2
-  FERY_ORIGIN: https://fery.seiya.dev
-  FERY_CLI_URL: https://fery.seiya.dev/bin/fery/fery-x86_64-unknown-linux-musl
-  FERY_CLI_SHA256: 30ea9f968051414902ef8eb189bc565702f9c2cb13e4ded034ff0f0799664c67
 
 jobs:
-  frontend:
-    name: 构建管理界面
+  build:
+    name: 标准构建与本地校验
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     steps:
-      - name: 检出源码
+      - name: 检出精确发布 tag
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.SOURCE_COMMIT }}
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+          fetch-depth: 0
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.sum
       - name: 安装 pnpm
         uses: pnpm/action-setup@v4
         with:
@@ -43,148 +49,37 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
           cache-dependency-path: web/gocronx-admin/pnpm-lock.yaml
-      - name: 构建管理界面
-        working-directory: web/gocronx-admin
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm run build
-      - name: 上传管理界面
+      - name: 校验发布脚本
+        run: .github/scripts/test-seiya-release.sh
+      - name: 构建双架构制品与 release.json
+        run: .github/scripts/seiya-release.sh build dist
+      - name: 上传构建结果
         uses: actions/upload-artifact@v4
         with:
-          name: gocron-frontend-dist
-          path: web/gocronx-admin/dist/
-
-  build:
-    name: 构建 ${{ matrix.arch }}
-    needs: frontend
-    runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            goarch: amd64
-            gocron_size: 48619646
-            gocron_sha256: 3c9d01cc98ef134c560408dcb040925f32228b9ac02d24a3ac156474e505df6c
-            node_size: 19738750
-            node_sha256: 549119063a3f79d836542e3a055f5c07a78e5fa00ee926c46dd0d6a8f72321fb
-          - arch: arm64
-            goarch: arm64
-            gocron_size: 45482110
-            gocron_sha256: 144ac9a97c2f5f14ae22a599e895ad0aa8af4f84c760821c033b577ed616c7c9
-            node_size: 18350206
-            node_sha256: 36265fcec0c1c345e147eb3699f025d067f61ec7f42d82d2b32488e0bc444fae
-    steps:
-      - name: 检出源码
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ env.SOURCE_COMMIT }}
-      - name: 安装 Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-          cache-dependency-path: go.sum
-      - name: 下载管理界面
-        uses: actions/download-artifact@v4
-        with:
-          name: gocron-frontend-dist
-          path: web/gocronx-admin/dist/
-      - name: 构建二进制
-        env:
-          GOARCH: ${{ matrix.goarch }}
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          build_date=2026-08-16T10:31:42Z
-          ldflags="-s -w -buildid= -X main.AppVersion=1.11.1 -X main.BuildDate=${build_date} -X main.GitCommit=${SOURCE_COMMIT}"
-          for service in gocron gocron-node; do
-            output="dist/${service}-linux-${{ matrix.arch }}"
-            package="./cmd/gocron"
-            [ "$service" = gocron-node ] && package="./cmd/node"
-            CGO_ENABLED=0 GOOS=linux go build -trimpath -buildvcs=false -ldflags "$ldflags" -o "$output" "$package"
-            chmod 755 "$output"
-            file "$output"
-          done
-          for service in gocron gocron-node; do
-            output="dist/${service}-linux-${{ matrix.arch }}"
-            if [ "$service" = gocron ]; then
-              expected_size=${{ matrix.gocron_size }}
-              expected_sha256=${{ matrix.gocron_sha256 }}
-            else
-              expected_size=${{ matrix.node_size }}
-              expected_sha256=${{ matrix.node_sha256 }}
-            fi
-            test "$(stat -c %s "$output")" -eq "$expected_size"
-            test "$(sha256sum "$output" | awk '{print $1}')" = "$expected_sha256"
-          done
-          for service in gocron gocron-node; do
-            output="dist/${service}-linux-${{ matrix.arch }}"
-            sha256sum "$output" | tee "$output.sha256"
-          done
-      - name: 上传二进制
-        uses: actions/upload-artifact@v4
-        with:
-          name: gocron-linux-${{ matrix.arch }}
-          path: dist/gocron-linux-${{ matrix.arch }}*
-      - name: 上传节点二进制
-        uses: actions/upload-artifact@v4
-        with:
-          name: gocron-node-linux-${{ matrix.arch }}
-          path: dist/gocron-node-linux-${{ matrix.arch }}*
+          name: seiya-gocron-v1.11.1-seiya.5
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
 
   publish:
-    name: 发布并校验 Fery
-    if: github.event_name != 'pull_request'
+    name: 发布 sources 并逐字节回读
     needs: build
     runs-on: ubuntu-22.04
+    timeout-minutes: 15
     steps:
-      - name: 检出发布脚本
+      - name: 检出精确发布 tag
         uses: actions/checkout@v4
-      - name: 验证不可变发布判定
-        run: .github/scripts/test-publish-seiya-artifacts.sh
-      - name: 下载二进制
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+          fetch-depth: 0
+      - name: 下载构建结果
         uses: actions/download-artifact@v4
         with:
-          pattern: gocron*-linux-*
-          path: dist
-          merge-multiple: true
-      - name: 校验标准制品清单
-        run: |
-          set -euo pipefail
-          expected="$(for service in gocron gocron-node; do
-            for arch in amd64 arm64; do
-              printf '%s\n' "${service}-linux-${arch}" "${service}-linux-${arch}.sha256"
-            done
-          done | sort)"
-          actual="$(find dist -maxdepth 1 -type f -exec basename {} \; | sort)"
-          test "$actual" = "$expected"
-          for service in gocron gocron-node; do
-            for arch in amd64 arm64; do
-              name="${service}-linux-${arch}"
-              test "$(awk 'NF {print $1; exit}' "dist/${name}.sha256")" = \
-                "$(sha256sum "dist/${name}" | awk '{print $1}')"
-            done
-          done
-      - name: 安装 Fery CLI
+          name: seiya-gocron-v1.11.1-seiya.5
+          path: dist/
+      - name: 安装固定版本 Fery
+        run: .github/scripts/seiya-release.sh install-fery "$RUNNER_TEMP/fery"
+      - name: 上传 sources payload，回读后最后发布 manifest
         env:
           FERY_SECRET_KEY: ${{ secrets.FERY_SECRET_KEY }}
-        run: |
-          set -euo pipefail
-          test -n "$FERY_SECRET_KEY"
-          curl --fail --location --retry 5 --retry-all-errors --output fery "$FERY_CLI_URL"
-          echo "$FERY_CLI_SHA256  fery" | sha256sum --check --status
-          chmod 755 fery
-      - name: 上传并回读校验
-        env:
-          FERY_SECRET_KEY: ${{ secrets.FERY_SECRET_KEY }}
-        run: |
-          set -euo pipefail
-          args=()
-          for service in gocron gocron-node; do
-            for arch in amd64 arm64; do
-              name="${service}-linux-${arch}"
-              args+=("$service" "$SERVICE_VERSION" "dist/$name")
-            done
-          done
-          .github/scripts/publish-seiya-artifacts.sh "${args[@]}"
+        run: .github/scripts/seiya-release.sh publish dist "$RUNNER_TEMP/fery"
