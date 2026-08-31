@@ -56,8 +56,17 @@ EXPLICIT_FILES = {
     "go.sum",
     "package.json",
     "web/gocronx-admin/.gitignore",
+    "web/gocronx-admin/.env",
+    "web/gocronx-admin/.env.production",
+    "web/gocronx-admin/index.html",
+    "web/gocronx-admin/package.json",
+    "web/gocronx-admin/pnpm-lock.yaml",
+    "web/gocronx-admin/pnpm-workspace.yaml",
+    "web/gocronx-admin/tsconfig.json",
+    "web/gocronx-admin/vite.config.ts",
 }
 GENERATED_PREFIXES = (
+    ".seiya-release-build.",
     "dist/",
     "web/gocronx-admin/dist/",
     "web/gocronx-admin/node_modules/",
@@ -98,8 +107,16 @@ def decode_json_stream(output: str) -> list[dict]:
 
 
 def is_frontend_input(relative: str) -> bool:
-    # Tailwind v4 会扫描整个前端项目树；配置、编辑器文件和 Husky 脚本也可能改变候选类集合。
-    return relative.startswith("web/gocronx-admin/")
+    # source(none) 把 Tailwind 输入限定为入口 HTML 和实际 UI 源码。
+    return (
+        relative in EXPLICIT_FILES
+        or (
+            relative.startswith("web/gocronx-admin/.env")
+            and relative != "web/gocronx-admin/.env.development"
+        )
+        or relative.startswith("web/gocronx-admin/src/")
+        or relative.startswith("web/gocronx-admin/public/")
+    )
 
 
 def selected_go_files(root: pathlib.Path, goarch: str) -> tuple[set[str], set[str]]:

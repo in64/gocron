@@ -3,13 +3,29 @@ name: 发布 Seiya 标准构建输入
 on:
   push:
     tags:
-      - v1.11.1-seiya.5
+      - v1.11.1-seiya.6
   workflow_dispatch:
     inputs:
       tag:
         description: 必须已存在且精确指向发布提交的 tag
         required: true
-        default: v1.11.1-seiya.5
+        default: v1.11.1-seiya.6
+      commit:
+        description: 独立验收锁定的 40 位完整 commit
+        required: true
+      publish:
+        description: 仅在 Action 制品逐字节通过独立验收后发布
+        required: true
+        type: boolean
+        default: false
+      expected_gocron_manifest_sha256:
+        description: 独立验收通过的 gocron release.json SHA256
+        required: false
+        default: ''
+      expected_gocron_node_manifest_sha256:
+        description: 独立验收通过的 gocron-node release.json SHA256
+        required: false
+        default: ''
 
 concurrency:
   group: seiya-release-${{ github.repository }}-${{ github.ref }}
@@ -19,7 +35,7 @@ permissions:
   contents: read
 
 env:
-  RELEASE_TAG: v1.11.1-seiya.5
+  RELEASE_TAG: v1.11.1-seiya.6
   GO_VERSION: 1.26.6
   NODE_VERSION: 25.9.0
   PNPM_VERSION: 10.34.3
@@ -34,10 +50,14 @@ jobs:
     steps:
       - name: 校验精确发布 tag
         env:
-          SELECTED_TAG: ${{ github.event.inputs.tag || github.ref_name }}
-        run: test "$SELECTED_TAG" = "$RELEASE_TAG"
+          SELECTED_TAG: ${{ inputs.tag || github.ref_name }}
+          SELECTED_COMMIT: ${{ inputs.commit || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$SELECTED_TAG" = "$RELEASE_TAG"
+          [[ "$SELECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
       - name: 检出精确发布 tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
@@ -46,18 +66,20 @@ jobs:
         env:
           EVENT_COMMIT: ${{ github.sha }}
           EVENT_NAME: ${{ github.event_name }}
+          SELECTED_COMMIT: ${{ inputs.commit || github.sha }}
         run: |
           set -euo pipefail
           release_commit=$(git rev-parse HEAD)
           tag_commit=$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")
           [[ "$release_commit" =~ ^[0-9a-f]{40}$ ]]
+          test "$release_commit" = "$SELECTED_COMMIT"
           test "$tag_commit" = "$release_commit"
           if [ "$EVENT_NAME" = push ]; then
             test "$EVENT_COMMIT" = "$release_commit"
           fi
           printf 'release_commit=%s\n' "$release_commit" >> "$GITHUB_OUTPUT"
       - name: 安装 Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: go.sum
@@ -77,21 +99,21 @@ jobs:
       SEIYA_RELEASE_COMMIT: ${{ needs.guard.outputs.release_commit }}
     steps:
       - name: 检出本次运行锁定的 commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.guard.outputs.release_commit }}
           fetch-depth: 0
       - name: 安装 Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: go.sum
       - name: 安装 pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         with:
           version: ${{ env.PNPM_VERSION }}
       - name: 安装 Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -99,9 +121,9 @@ jobs:
       - name: 构建双架构制品与 release.json
         run: .github/scripts/seiya-release.sh build dist
       - name: 上传构建结果
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: seiya-gocron-v1.11.1-seiya.5
+          name: seiya-gocron-v1.11.1-seiya.6
           path: dist/
           if-no-files-found: error
           retention-days: 1
@@ -109,26 +131,37 @@ jobs:
   publish:
     name: 发布 sources 并逐字节回读
     needs: [guard, build]
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     env:
       SEIYA_RELEASE_COMMIT: ${{ needs.guard.outputs.release_commit }}
     steps:
       - name: 检出本次运行锁定的 commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.guard.outputs.release_commit }}
           fetch-depth: 0
       - name: 安装 source 枚举使用的 Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: go.sum
       - name: 下载构建结果
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: seiya-gocron-v1.11.1-seiya.5
+          name: seiya-gocron-v1.11.1-seiya.6
           path: dist/
+      - name: 校验独立验收锁定的 manifest 摘要
+        env:
+          EXPECTED_GOCRON: ${{ inputs.expected_gocron_manifest_sha256 }}
+          EXPECTED_GOCRON_NODE: ${{ inputs.expected_gocron_node_manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_GOCRON" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$EXPECTED_GOCRON_NODE" =~ ^[0-9a-f]{64}$ ]]
+          test "$(sha256sum dist/gocron/release.json | awk '{print $1}')" = "$EXPECTED_GOCRON"
+          test "$(sha256sum dist/gocron-node/release.json | awk '{print $1}')" = "$EXPECTED_GOCRON_NODE"
       - name: 安装固定版本 Fery
         run: .github/scripts/seiya-release.sh install-fery "$GITHUB_WORKSPACE/.git/fery"
       - name: 发布前重验 tag 未移动

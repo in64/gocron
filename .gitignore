@@ -37,6 +37,7 @@ profile/*
 /gocron-package
 /gocron-node-package
 /dist
+/.seiya-release-build.*
 
 node_modules
 .pnpm-store/

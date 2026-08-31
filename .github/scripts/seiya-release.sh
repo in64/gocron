@@ -5,9 +5,9 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd -- "$script_dir/../.." && pwd)
 cdn_origin=https://fery.seiya.dev
 repository=in64/gocron
-release_tag=v1.11.1-seiya.5
-gocron_version=1.11.1-seiya.5
-gocron_node_version=1.11.1-seiya.4
+release_tag=v1.11.1-seiya.6
+gocron_version=1.11.1-seiya.6
+gocron_node_version=1.11.1-seiya.5
 app_version=1.11.1
 go_version=1.26.6
 go_proxy=https://goproxy.cn,direct
@@ -219,7 +219,7 @@ document = {
                 "command": ["pnpm", "run", "build"],
                 "environment": {
                     "CI": "true",
-                    "TMPDIR": "<dist-dir>/.build-tmp.XXXXXX/tmp",
+                    "TMPDIR": "<repo-root>/.seiya-release-build.XXXXXX/tmp",
                 },
             },
             "go": {
@@ -233,7 +233,7 @@ document = {
                     "GOTOOLCHAIN": "local",
                     "GOWORK": "off",
                     "SOURCE_DATE_EPOCH": os.environ["SEIYA_MANIFEST_SOURCE_EPOCH"],
-                    "TMPDIR": "<dist-dir>/.build-tmp.XXXXXX/tmp",
+                    "TMPDIR": "<repo-root>/.seiya-release-build.XXXXXX/tmp",
                 },
                 "ldflags": [
                     "-s",
@@ -295,7 +295,7 @@ verify_local() {
   validate_manifest gocron-node "$gocron_node_version" "$dist_dir/gocron-node" || return
 }
 
-build_release() {
+build_release() (
   local dist_dir build_tmp build_source build_work_tmp build_epoch build_date
   local ldflags arch service package output
   dist_dir=$1
@@ -319,16 +319,20 @@ print(datetime.datetime.fromtimestamp(int(sys.argv[1]), datetime.timezone.utc).s
 PY
   ) || return
   ldflags="-s -w -buildid= -X main.AppVersion=$app_version -X main.BuildDate=$build_date -X main.GitCommit=$release_commit"
-  build_tmp=$(mktemp -d "$dist_dir/.build-tmp.XXXXXX") || return
+  build_tmp=$(mktemp -d "$repo_root/.seiya-release-build.XXXXXX") || return
+  case "$build_tmp" in
+    "$repo_root"/.seiya-release-build.*) ;;
+    *)
+      echo "构建临时目录越过项目边界: $build_tmp" >&2
+      return 1
+      ;;
+  esac
+  trap 'rm -rf -- "$build_tmp"' EXIT
   build_source=$build_tmp/source
   build_work_tmp=$build_tmp/tmp
-  if ! mkdir -p "$build_source" "$build_work_tmp"; then
-    rm -rf -- "$build_tmp"
-    return 1
-  fi
+  mkdir -p "$build_source" "$build_work_tmp" || return
   if ! git -C "$repo_root" archive --format=tar "$release_commit" \
     | tar -xf - -C "$build_source"; then
-    rm -rf -- "$build_tmp"
     return 1
   fi
 
@@ -338,7 +342,6 @@ PY
       && pnpm install --frozen-lockfile --registry "$npm_registry" \
       && pnpm run build
   ); then
-    rm -rf -- "$build_tmp"
     return 1
   fi
 
@@ -355,24 +358,18 @@ PY
             go build -mod=readonly -trimpath -buildvcs=false -ldflags "$ldflags" \
               -o "$output" "$package"
       ); then
-        rm -rf -- "$build_tmp"
         return 1
       fi
-      if ! chmod 0755 "$output"; then
-        rm -rf -- "$build_tmp"
-        return 1
-      fi
+      chmod 0755 "$output" || return
     done
   done
   if ! install -m 0644 "$build_source/LICENSE" "$dist_dir/gocron/LICENSE" \
     || ! install -m 0644 "$build_source/LICENSE" "$dist_dir/gocron-node/LICENSE" \
     || ! write_manifests "$dist_dir" \
     || ! verify_local "$dist_dir"; then
-    rm -rf -- "$build_tmp"
     return 1
   fi
-  rm -rf -- "$build_tmp"
-}
+)
 
 verify_cdn() {
   local file relative expected temporary attempt

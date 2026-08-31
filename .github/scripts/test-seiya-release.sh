@@ -55,6 +55,24 @@ grep -Fq 'release_commit: ${{ steps.lock.outputs.release_commit }}' "$workflow_f
 test "$(grep -Fc 'ref: ${{ needs.guard.outputs.release_commit }}' "$workflow_file")" -eq 2
 grep -Fq 'git fetch --force --no-tags origin' "$workflow_file"
 test "$(grep -Fc '.github/scripts/seiya-release.sh verify-identity' "$workflow_file")" -eq 2
+# shellcheck disable=SC2016 # 这里匹配 GitHub expression 字面量。
+grep -Fq "if: \${{ github.event_name == 'workflow_dispatch' && inputs.publish }}" "$workflow_file"
+grep -Fq 'test "$release_commit" = "$SELECTED_COMMIT"' "$workflow_file"
+grep -Fq 'EXPECTED_GOCRON: ${{ inputs.expected_gocron_manifest_sha256 }}' "$workflow_file"
+grep -Fq 'EXPECTED_GOCRON_NODE: ${{ inputs.expected_gocron_node_manifest_sha256 }}' "$workflow_file"
+if grep -Eq '^[[:space:]]*uses: [^#]+@v[0-9]' "$workflow_file"; then
+  echo '发布 workflow 含未铆钉到 commit 的 Action' >&2
+  exit 1
+fi
+
+tailwind_css="$repo_root/web/gocronx-admin/src/assets/styles/core/tailwind.css"
+grep -Fq "@import 'tailwindcss' source(none);" "$tailwind_css"
+grep -Fq "@source '../../../../index.html';" "$tailwind_css"
+grep -Fq "@source '../../../**/*.{vue,js,ts,jsx,tsx}';" "$tailwind_css"
+if grep -Fxq "@import 'tailwindcss';" "$tailwind_css"; then
+  echo 'Tailwind 自动扫描未关闭' >&2
+  exit 1
+fi
 
 assert_clean_test_tree() {
   test ! -e "$script_dir/__pycache__"
@@ -63,7 +81,8 @@ assert_clean_test_tree() {
 assert_clean_test_tree
 
 test_root=$(mktemp -d "$repo_root/.git/seiya-release-test.XXXXXX")
-trap 'rm -rf -- "$test_root"' EXIT
+outside_root=''
+trap 'rm -rf -- "$test_root"; if [ -n "${outside_root:-}" ]; then rm -rf -- "$outside_root"; fi' EXIT
 export FAKE_CDN_STORE="$test_root/store"
 export FAKE_FERY_LOG="$test_root/fery.log"
 export cdn_origin=https://test.invalid
@@ -150,10 +169,12 @@ files = (
     "go.mod",
     "go.sum",
     "package.json",
-    "web/gocronx-admin/.env.development",
-    "web/gocronx-admin/eslint.config.mjs",
-    "web/gocronx-admin/scripts/clean-dev.ts",
+    "web/gocronx-admin/.env.production",
+    "web/gocronx-admin/index.html",
+    "web/gocronx-admin/package.json",
     "web/gocronx-admin/src/main.ts",
+    "web/gocronx-admin/src/assets/styles/core/tailwind.css",
+    "web/gocronx-admin/vite.config.ts",
 )
 records = {}
 for relative in files:
@@ -170,8 +191,8 @@ import sys
 
 root = pathlib.Path(sys.argv[1])
 expected = {
-    "gocron": "1.11.1-seiya.5",
-    "gocron-node": "1.11.1-seiya.4",
+    "gocron": "1.11.1-seiya.6",
+    "gocron-node": "1.11.1-seiya.5",
 }
 for name, version in expected.items():
     document = json.loads((root / name / "release.json").read_text(encoding="utf-8"))
@@ -187,9 +208,10 @@ for name, version in expected.items():
     assert "cmd/gocron/gocron.go" in source_files
     assert "cmd/node/node.go" in source_files
     assert "web/gocronx-admin/src/main.ts" in source_files
-    assert "web/gocronx-admin/scripts/clean-dev.ts" in source_files
-    assert "web/gocronx-admin/.env.development" in source_files
-    assert "web/gocronx-admin/eslint.config.mjs" in source_files
+    assert "web/gocronx-admin/src/assets/styles/core/tailwind.css" in source_files
+    assert "web/gocronx-admin/.env.production" in source_files
+    assert "web/gocronx-admin/vite.config.ts" in source_files
+    assert "web/gocronx-admin/index.html" in source_files
     assert "package.json" in source_files
     assert "docs/zh/index.md" in source_files
     assert "cmd/gocron/managed_test.go" not in source_files
@@ -200,13 +222,13 @@ for name, version in expected.items():
         "pnpm", "install", "--frozen-lockfile", "--registry", "https://registry.npmmirror.com"
     ]
     assert build["frontend"]["environment"]["CI"] == "true"
-    assert build["frontend"]["environment"]["TMPDIR"] == "<dist-dir>/.build-tmp.XXXXXX/tmp"
+    assert build["frontend"]["environment"]["TMPDIR"] == "<repo-root>/.seiya-release-build.XXXXXX/tmp"
     assert build["go"]["flags"] == ["-mod=readonly", "-trimpath", "-buildvcs=false"]
     assert build["go"]["environment"]["GOFLAGS"] == ""
     assert build["go"]["environment"]["GOPROXY"] == "https://goproxy.cn,direct"
     assert build["go"]["environment"]["GOTOOLCHAIN"] == "local"
     assert build["go"]["environment"]["GOWORK"] == "off"
-    assert build["go"]["environment"]["TMPDIR"] == "<dist-dir>/.build-tmp.XXXXXX/tmp"
+    assert build["go"]["environment"]["TMPDIR"] == "<repo-root>/.seiya-release-build.XXXXXX/tmp"
     assert build["go"]["targets"] == {"linux-amd64": "amd64", "linux-arm64": "arm64"}
     assert set(document["targets"]) == {"linux-amd64", "linux-arm64"}
     for target in document["targets"].values():
@@ -250,8 +272,12 @@ relative = pathlib.Path(sys.argv[2]).relative_to(repo).as_posix()
 assert relative in module.status_paths(repo)
 assert module.is_untracked_build_input(relative, set())
 assert module.is_frontend_input("web/gocronx-admin/.env.production")
-assert module.is_frontend_input("web/gocronx-admin/.env.development")
+assert not module.is_frontend_input("web/gocronx-admin/.env.development")
+assert module.is_frontend_input("web/gocronx-admin/src/main.ts")
+assert not module.is_frontend_input("web/gocronx-admin/scripts/clean-dev.ts")
 assert not module.is_frontend_input("docs/.env.production")
+assert module.is_generated(".seiya-release-build.fixture/source/file")
+assert module.is_generated("web/gocronx-admin/node_modules/pidtree/readme.md")
 observed = {}
 original_check_output = module.subprocess.check_output
 
@@ -277,7 +303,7 @@ then
 fi
 rm -f -- "$ignored_input"
 
-load_release_identity() { release_commit=$(git -C "$repo_root" rev-parse HEAD); }
+load_release_identity() { release_commit=$(command git -C "$repo_root" rev-parse HEAD); }
 require_toolchains() { :; }
 # shellcheck disable=SC2329 # build_release 在子 Shell 中按命令名调用该 fixture。
 pnpm() {
@@ -292,8 +318,73 @@ if build_release "$failure_dist" >/dev/null 2>&1; then
   exit 1
 fi
 test ! -e "$test_root/pnpm-build-ran"
-test -z "$(find "$failure_dist" -maxdepth 1 -type d -name '.build-tmp.*' -print)"
+test -z "$(find "$repo_root" -maxdepth 1 -type d -name '.seiya-release-build.*' -print)"
 unset -f pnpm
+
+# 用最小工具链替身证明 caller 的 dist 位于仓内或仓外时，构建布局和产物字节完全相同。
+fixture_source="$test_root/repro-source"
+mkdir -p "$fixture_source/web/gocronx-admin"
+cp "$repo_root/LICENSE" "$fixture_source/LICENSE"
+printf '<div class="seiya-fixture"></div>\n' > "$fixture_source/web/gocronx-admin/index.html"
+workspace_log="$test_root/workspaces.log"
+export FAKE_RELEASE_GIT=1
+git() {
+  if [ "${FAKE_RELEASE_GIT:-}" = 1 ] && [ "${1:-}" = -C ] && [ "${3:-}" = show ]; then
+    printf '1700000000\n'
+    return
+  fi
+  if [ "${FAKE_RELEASE_GIT:-}" = 1 ] && [ "${1:-}" = -C ] && [ "${3:-}" = archive ]; then
+    tar -cf - -C "$fixture_source" .
+    return
+  fi
+  command git "$@"
+}
+pnpm() {
+  case "${1:-} ${2:-}" in
+    'install '*) return ;;
+    'run build')
+      mkdir -p dist/assets
+      printf '.seiya-fixture{}\n' > dist/assets/app.css
+      printf '%s|%s\n' "$PWD" "$TMPDIR" >> "$workspace_log"
+      ;;
+    *) return 2 ;;
+  esac
+}
+go() {
+  local output='' package='' argument
+  while [ "$#" -gt 0 ]; do
+    argument=$1
+    shift
+    if [ "$argument" = -o ]; then
+      output=$1
+      shift
+    else
+      package=$argument
+    fi
+  done
+  test -n "$output"
+  printf '%s|%s\n' "$GOARCH" "$package" > "$output"
+}
+inside_dist="$test_root/caller-inside"
+outside_root=$(mktemp -d "${TMPDIR:-/tmp}/seiya-gocron-repro.XXXXXX")
+outside_dist="$outside_root/caller-outside"
+build_release "$inside_dist"
+build_release "$outside_dist"
+diff -r "$inside_dist" "$outside_dist" >/dev/null
+test "$(wc -l < "$workspace_log")" -eq 2
+while IFS='|' read -r workdir temporary; do
+  case "$workdir" in
+    "$repo_root"/.seiya-release-build.*/source/web/gocronx-admin) ;;
+    *) echo "前端构建未使用固定项目私有 workspace: $workdir" >&2; exit 1 ;;
+  esac
+  case "$temporary" in
+    "$repo_root"/.seiya-release-build.*/tmp) ;;
+    *) echo "TMPDIR 未使用固定项目私有 workspace: $temporary" >&2; exit 1 ;;
+  esac
+done < "$workspace_log"
+test -z "$(find "$repo_root" -maxdepth 1 -type d -name '.seiya-release-build.*' -print)"
+unset FAKE_RELEASE_GIT
+unset -f git pnpm go
 
 fake_fery="$test_root/fery"
 # shellcheck disable=SC2016 # 这里生成的脚本需要在执行时读取测试环境变量。

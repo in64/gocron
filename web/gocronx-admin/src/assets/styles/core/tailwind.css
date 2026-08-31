@@ -1,4 +1,7 @@
-@import 'tailwindcss';
+@import 'tailwindcss' source(none);
+@source '../../../../index.html';
+@source '../../../**/*.{vue,js,ts,jsx,tsx}';
+@source not '../../../types/import';
 @custom-variant dark (&:where(.dark, .dark *));
 
 /* ==================== Light Mode Variables ==================== */
