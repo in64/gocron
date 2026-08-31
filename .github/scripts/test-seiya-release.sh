@@ -57,8 +57,11 @@ grep -Fq 'git fetch --force --no-tags origin' "$workflow_file"
 test "$(grep -Fc '.github/scripts/seiya-release.sh verify-identity' "$workflow_file")" -eq 2
 # shellcheck disable=SC2016 # 这里匹配 GitHub expression 字面量。
 grep -Fq "if: \${{ github.event_name == 'workflow_dispatch' && inputs.publish }}" "$workflow_file"
+# shellcheck disable=SC2016 # 这里匹配 GitHub expression 字面量。
 grep -Fq 'test "$release_commit" = "$SELECTED_COMMIT"' "$workflow_file"
+# shellcheck disable=SC2016 # 这里匹配 GitHub expression 字面量。
 grep -Fq 'EXPECTED_GOCRON: ${{ inputs.expected_gocron_manifest_sha256 }}' "$workflow_file"
+# shellcheck disable=SC2016 # 这里匹配 GitHub expression 字面量。
 grep -Fq 'EXPECTED_GOCRON_NODE: ${{ inputs.expected_gocron_node_manifest_sha256 }}' "$workflow_file"
 if grep -Eq '^[[:space:]]*uses: [^#]+@v[0-9]' "$workflow_file"; then
   echo '发布 workflow 含未铆钉到 commit 的 Action' >&2
@@ -191,8 +194,8 @@ import sys
 
 root = pathlib.Path(sys.argv[1])
 expected = {
-    "gocron": "1.11.1-seiya.7",
-    "gocron-node": "1.11.1-seiya.6",
+    "gocron": "1.11.1-seiya.8",
+    "gocron-node": "1.11.1-seiya.7",
 }
 for name, version in expected.items():
     document = json.loads((root / name / "release.json").read_text(encoding="utf-8"))
@@ -329,6 +332,7 @@ cp "$repo_root/LICENSE" "$fixture_source/LICENSE"
 printf '<div class="seiya-fixture"></div>\n' > "$fixture_source/web/gocronx-admin/index.html"
 workspace_log="$test_root/workspaces.log"
 export FAKE_RELEASE_GIT=1
+# shellcheck disable=SC2329 # build_release 在子 Shell 中按命令名调用该 fixture。
 git() {
   if [ "${FAKE_RELEASE_GIT:-}" = 1 ] && [ "${1:-}" = -C ] && [ "${3:-}" = show ]; then
     printf '1700000000\n'
@@ -340,6 +344,7 @@ git() {
   fi
   command git "$@"
 }
+# shellcheck disable=SC2329 # build_release 在子 Shell 中按命令名调用该 fixture。
 pnpm() {
   case "${1:-} ${2:-}" in
     'install '*) return ;;
@@ -351,6 +356,7 @@ pnpm() {
     *) return 2 ;;
   esac
 }
+# shellcheck disable=SC2329 # build_release 在子 Shell 中按命令名调用该 fixture。
 go() {
   local output='' package='' argument
   while [ "$#" -gt 0 ]; do
