@@ -177,6 +177,7 @@ files = (
     "web/gocronx-admin/package.json",
     "web/gocronx-admin/src/main.ts",
     "web/gocronx-admin/src/assets/styles/core/tailwind.css",
+    "web/gocronx-admin/scripts/clean-dev.ts",
     "web/gocronx-admin/vite.config.ts",
 )
 records = {}
@@ -194,8 +195,8 @@ import sys
 
 root = pathlib.Path(sys.argv[1])
 expected = {
-    "gocron": "1.11.1-seiya.8",
-    "gocron-node": "1.11.1-seiya.7",
+    "gocron": "1.11.1-seiya.9",
+    "gocron-node": "1.11.1-seiya.8",
 }
 for name, version in expected.items():
     document = json.loads((root / name / "release.json").read_text(encoding="utf-8"))
