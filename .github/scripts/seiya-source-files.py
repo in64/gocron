@@ -115,6 +115,7 @@ def is_frontend_input(relative: str) -> bool:
             and relative != "web/gocronx-admin/.env.development"
         )
         or relative.startswith("web/gocronx-admin/src/")
+        or relative.startswith("web/gocronx-admin/scripts/")
         or relative.startswith("web/gocronx-admin/public/")
     )
 

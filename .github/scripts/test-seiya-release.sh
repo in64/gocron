@@ -191,8 +191,8 @@ import sys
 
 root = pathlib.Path(sys.argv[1])
 expected = {
-    "gocron": "1.11.1-seiya.6",
-    "gocron-node": "1.11.1-seiya.5",
+    "gocron": "1.11.1-seiya.7",
+    "gocron-node": "1.11.1-seiya.6",
 }
 for name, version in expected.items():
     document = json.loads((root / name / "release.json").read_text(encoding="utf-8"))
@@ -209,6 +209,7 @@ for name, version in expected.items():
     assert "cmd/node/node.go" in source_files
     assert "web/gocronx-admin/src/main.ts" in source_files
     assert "web/gocronx-admin/src/assets/styles/core/tailwind.css" in source_files
+    assert "web/gocronx-admin/scripts/clean-dev.ts" in source_files
     assert "web/gocronx-admin/.env.production" in source_files
     assert "web/gocronx-admin/vite.config.ts" in source_files
     assert "web/gocronx-admin/index.html" in source_files
@@ -274,7 +275,7 @@ assert module.is_untracked_build_input(relative, set())
 assert module.is_frontend_input("web/gocronx-admin/.env.production")
 assert not module.is_frontend_input("web/gocronx-admin/.env.development")
 assert module.is_frontend_input("web/gocronx-admin/src/main.ts")
-assert not module.is_frontend_input("web/gocronx-admin/scripts/clean-dev.ts")
+assert module.is_frontend_input("web/gocronx-admin/scripts/clean-dev.ts")
 assert not module.is_frontend_input("docs/.env.production")
 assert module.is_generated(".seiya-release-build.fixture/source/file")
 assert module.is_generated("web/gocronx-admin/node_modules/pidtree/readme.md")
